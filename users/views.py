@@ -633,7 +633,8 @@ def admin_change_details(request, book_isbn):
         book.isbn = post['book_isbn'] 
         book.title = post['book_name'] 
         book.author = post['book_author'] 
-        book.book_cover_image = post['book_cover_image']
+        book.book_cover_image=request.FILES.get('book_cover_image')
+        
         if issued_books > int(post['total_copies']): 
             messages.append('Book cannot be editied because the new copies is less than issued copies')
             return render(request, 'admin_change_details.html', {'messages' : messages, 'book' : book})
