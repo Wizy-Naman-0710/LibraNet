@@ -20,7 +20,7 @@ def get_student(request):
 
     social_account = SocialAccount.objects.get(user=request.user, provider='google')
     google_uid = social_account.uid
-    student = Student.objects.get(student_uid=google_uid)
+    student = get_object_or_404(Student, student_uid=google_uid)
 
     return student
 
