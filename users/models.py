@@ -1,9 +1,11 @@
 from django.db import models
+from django.contrib.auth.models import User
 from datetime import timedelta
 import uuid 
 from django.utils.timezone import now
 
 class Student(models.Model): 
+    user = models.OneToOneField(User, on_delete=models.CASCADE)
     student_uid = models.CharField(max_length=100, unique=True)
     student_name =models.CharField(max_length=100)
     bits_id = models.CharField(max_length=13, unique=True)
@@ -38,10 +40,16 @@ class Book(models.Model):
             self.save()
         else:
             raise ValueError("All copies are already returned.")
-    
 
 def date_estimation(): 
     return now() + timedelta(days=14)
+
+class Librarian(models.Model):
+    user = models.OneToOneField(User, on_delete=models.CASCADE)
+    librarian_id =models.CharField(max_length=100, unique=True)
+
+    def __str__(self):
+        return self.user.username 
 
 
 class BorrowRecord(models.Model):
@@ -51,7 +59,7 @@ class BorrowRecord(models.Model):
     borrow_date = models.DateTimeField(default=now)
     return_date = models.DateTimeField(default=date_estimation) 
     returned = models.BooleanField(default=False)
-    late_fees = models.PositiveIntegerField(default=0)
+    late_fees = models.FloatField(default=0.0)
 
     def __str__(self):
         return f"{self.student} borrowed {self.book}"
@@ -60,11 +68,15 @@ class BorrowRecord(models.Model):
         self.return_date = models.DateTimeField(default=date_estimation)
     
     def calculate_late_fees(self):
+        late_percentage = LateFeesPercentage.objects.get_or_create(id=1, defaults={'percentage' : 0.0})
         if not self.returned and now() > self.return_date:
             days_late = (now() - self.return_date).days
-            self.late_fees =  days_late * 10
+            if days_late > 0: 
+                self.late_fees = round(10 * ((1 + late_percentage)) ** days_late, 2)
         
 
+class LateFeesPercentage(models.Model):
+    percentage = models.FloatField(default=0.0)
 
 
 class Review(models.Model):
@@ -98,6 +110,7 @@ class FeedbackRecord(models.Model):
     student = models.ForeignKey(Student, on_delete=models.CASCADE)
     subject = models.CharField(max_length=100)
     body = models.CharField(max_length=1000)
+    reference_image = models.ImageField(upload_to='feedback_images/', null=True, blank=True)
     date = models.DateTimeField(default=now)
     admin_reply = models.BooleanField(default=False)
 

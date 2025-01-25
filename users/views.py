@@ -3,8 +3,10 @@ from django.contrib import messages
 from django.contrib.auth import authenticate, login, logout
 from django.contrib.auth.decorators import login_required, user_passes_test
 from django.contrib.admin.views.decorators import staff_member_required
+from django.core.paginator import Paginator, EmptyPage, PageNotAnInteger
 from .models import *
 from allauth.socialaccount.models import SocialAccount
+from django.contrib.auth.models import Group
 import requests
 import os 
 from django.http import FileResponse
@@ -12,8 +14,10 @@ from fuzzywuzzy import process
 from django.conf import settings
 import pandas as pd
 from django.core.files import File
+from .decorators import *
 
 def get_student(request): 
+
     social_account = SocialAccount.objects.get(user=request.user, provider='google')
     google_uid = social_account.uid
     student = Student.objects.get(student_uid=google_uid)
@@ -25,10 +29,11 @@ def signIn(request):
         username = request.POST['username']
         password = request.POST['password']
         user = authenticate(request, username=username, password=password)
+        print(user)
         if user is not None:
             login(request, user)
             messages.success(request, 'Login successful!')
-            return redirect('admin_dashboard/')  
+            return redirect('users:admin_dashboard')  
         else:
             messages.error(request, 'Invalid username or password.')
 
@@ -46,36 +51,42 @@ def is_not_staff(user):
 @user_passes_test(is_not_staff, login_url='')
 @login_required
 def google_login(request): 
-
     if request.user.is_authenticated:
         try: 
             social_account = SocialAccount.objects.get(user=request.user, provider='google')
             google_uid = social_account.uid
+
+
             if Student.objects.filter(student_uid=google_uid).exists():
                 return redirect('users:student_dashboard')
             else: 
+
                 student = Student.objects.create(
-                    student_uid = google_uid, 
-                    student_name = social_account.extra_data.get('name'), 
+                    user=request.user,  
+                    student_uid=google_uid, 
+                    student_name=social_account.extra_data.get('name'), 
                 )
                 student.save()
+
+                from django.contrib.auth.models import Group
+                student_group, created = Group.objects.get_or_create(name='Student')
+                request.user.groups.add(student_group)
+
                 return redirect('users:student_info')
         except SocialAccount.DoesNotExist: 
             return "No Google account linked."
 
     return redirect('users:student_dashboard')
 
-
-
 @user_passes_test(is_not_staff, login_url='')
 @login_required
 def student_info(request): 
     student = get_student(request)
-
     if request.method == 'POST': 
         student.bits_id = request.POST['bits-id']
         student.hostel = request.POST['hostel']
         student.save()
+
             
         return redirect('users:student_dashboard')
     
@@ -90,8 +101,7 @@ def student_info(request):
 
 
 #All student views 
-@user_passes_test(is_not_staff, login_url='')
-@login_required
+@group_required('Student')
 def student_dashboard(request): 
     student = get_student(request)
     current_books = BorrowRecord.objects.all().filter(student=student, returned=False)
@@ -99,6 +109,7 @@ def student_dashboard(request):
 
     for book in current_books: 
         total_fees += book.late_fees
+
 
     return render(
         request,
@@ -111,8 +122,7 @@ def student_dashboard(request):
         },
     )
     
-@user_passes_test(is_not_staff, login_url='')
-@login_required
+@group_required('Student')
 def student_book_details(request, book_isbn): 
 
     student = get_student(request)
@@ -144,6 +154,10 @@ def student_book_details(request, book_isbn):
     import math
 
     reviews = Review.objects.filter(book=book)
+    isReviewed = Review.objects.filter(book=book, student=student).exists()
+
+
+
     sum = 0 
     
     for review in reviews: 
@@ -166,15 +180,14 @@ def student_book_details(request, book_isbn):
             'added_favourite': added_favourite,
             'borrowed_before' : borrowed_before,
             'reviews' : reviews,
+            'isReviewed': isReviewed, 
             'average_rating' : average, 
             'average_range': average_range, 
         }
     )
 
 
-
-@user_passes_test(is_not_staff, login_url='')
-@login_required
+@group_required('Student')
 def borrow_book(request, book_isbn): 
     student = get_student(request)
     book = get_object_or_404(Book, isbn=book_isbn)
@@ -187,19 +200,19 @@ def borrow_book(request, book_isbn):
     record.save() 
     return redirect('users:student_dashboard')
 
-@user_passes_test(is_not_staff, login_url='')
-@login_required
+@group_required('Student')
 def return_book(request, record_id): 
     record = get_object_or_404(BorrowRecord, record_id=record_id)
     record.book.return_book()
     record.returned = True 
     record.return_date = now()
+    record.calculate_late_fees()
     record.save()
 
     return redirect('users:student_dashboard')
 
-@user_passes_test(is_not_staff, login_url='')
-@login_required
+
+@group_required('Student')
 def reissue_book(request, record_id): 
     record = get_object_or_404(BorrowRecord, record_id=record_id)
     record.return_date = now() + timedelta(days=14)
@@ -208,36 +221,53 @@ def reissue_book(request, record_id):
     return redirect('users:student_dashboard')
 
 
-@user_passes_test(is_not_staff, login_url='')
-@login_required
+@group_required('Student')
 def student_search_books(request): 
     books = Book.objects.all().order_by('-title')
-    search_value = ''
+   
+    search_value = request.GET.get('search', '').strip()
+    search_by = request.GET.get('search-by', '')
     messages = []
 
+
+    if search_value:
+        if search_by == 'title':
+            
+            titles = books.values_list('title', flat=True)
+            best_matches = process.extract(search_value, titles, limit=5)
+            
+            matched_titles = [match[0] for match in best_matches]
+            books_queryset = Book.objects.filter(title__in=matched_titles)
+            books = sorted(
+                books_queryset,
+                key = lambda book: matched_titles.index(book.title)
+            )[:5]
+            
+
+            if int(best_matches[0][1]) > 70 and int(int(best_matches[0][1]) < 99): 
+                messages.append(f'Did you mean: {best_matches[0][0]}')
+
+            
+
+        elif search_by == 'isbn':
+            books = books.filter(isbn=search_value)
+            if len(books) == 0: 
+                messages.append('No books found')
     
-    if request.method == 'POST':
-        search_value = request.POST.get('search', '').strip()
-        search_by = request.POST.get('search-by', '')
-        
-        if search_value:
-            if search_by == 'title':
+    paginator = Paginator(books, 5)
+    page_number = request.GET.get('page',1)
 
-                titles = books.values_list('title', flat=True)
-                best_matches = process.extract(search_value, titles, limit=5)
-                
-                matched_titles = [match[0] for match in best_matches]
-                books = [Book.objects.get(title=title) for title in matched_titles]
 
-                if int(best_matches[0][1]) > 70 and int(int(best_matches[0][1]) < 99): 
-                    messages.append(f'Did you mean: {best_matches[0][0]}')
 
-                
+    try : 
+        books = paginator.page(page_number)
+    except EmptyPage: 
+        books = paginator.page(paginator.num_pages)
+    except PageNotAnInteger: 
+        books = paginator.page(1)
 
-            elif search_by == 'isbn':
-                books = books.filter(isbn=search_value)
-                if len(books) == 0: 
-                    messages.append('No books found')
+    
+
 
     return render(
         request,
@@ -250,17 +280,14 @@ def student_search_books(request):
     )
 
 
-
-@user_passes_test(is_not_staff, login_url='')
-@login_required
+@group_required('Student')
 def student_history(request): 
     student = get_student(request)
     records = BorrowRecord.objects.filter(student=student, returned = True).order_by('-return_date')
     return render(request, 'student_history.html', {'records' : records})
 
 
-@user_passes_test(is_not_staff, login_url='')
-@login_required
+@group_required('Student')
 def add_favourite(request, book_isbn): 
     student = get_student(request)
     book = get_object_or_404(Book, isbn=book_isbn)
@@ -274,8 +301,7 @@ def add_favourite(request, book_isbn):
     return redirect('users:student_favourites')
 
 
-@user_passes_test(is_not_staff, login_url='')
-@login_required
+@group_required('Student')
 def remove_favourite(request, book_isbn): 
     student = get_student(request)
     book = get_object_or_404(Book, isbn=book_isbn)
@@ -285,8 +311,7 @@ def remove_favourite(request, book_isbn):
     return redirect('users:student_favourites')
 
 
-@user_passes_test(is_not_staff, login_url='')
-@login_required
+@group_required('Student')
 def student_feedback(request): 
     student = get_student(request) 
     if request.method == 'POST': 
@@ -298,6 +323,7 @@ def student_feedback(request):
             student = student, 
             subject = request.POST['subject'],
             body = request.POST['body'],
+            reference_image =request.FILES.get('reference_image'),
         )
         feedback.save()
         return redirect('users:student_feedback')
@@ -306,8 +332,7 @@ def student_feedback(request):
     return render(request, 'student_feedback.html', {'feedbacks' : feedbacks })
 
 
-@user_passes_test(is_not_staff, login_url='')
-@login_required
+@group_required('Student')
 def student_favourites(request):
     student = get_student(request)
     favourites = FavouriteRecord.objects.filter(student=student)
@@ -315,19 +340,32 @@ def student_favourites(request):
 
 
 #all admin views 
-@staff_member_required(login_url='')
-@login_required
+@group_required('Librarian')
 def admin_dashboard(request): 
     total_books = Book.objects.all().count()
     borrowed_books = BorrowRecord.objects.filter(returned= False).count()
+    feepercentage, _= LateFeesPercentage.objects.get_or_create(id=1, defaults={'percentage' : 0.0})
+    if request.method == 'POST': 
+        percentage = request.POST.get('late_fee_percentage')
+        feepercentage.percentage = percentage
+        feepercentage.save()
+  
+
+
+        print(feepercentage.percentage)
+        redirect('users:admin_dashboard')
+    
+    
     return render(
         request,
         'admin_dashboard.html', 
         {
             'user_name' : request.user,
             'total_books' : total_books, 
-            'borrowed_books': borrowed_books}
-        )
+            'borrowed_books': borrowed_books,
+            'lateFeePercentage': feepercentage
+        }
+    )
 
 
 #the autofill function to the details of the books
@@ -346,13 +384,12 @@ def get_book_info(isbn):
             book = data[f'ISBN:{isbn}']
             title = book.get('title', 'N/A')
             authors = ', '.join([author['name'] for author in book.get('authors', [])])
-            cover_image = book.get('cover', {}).get('medium', 'No cover image available')
-            print(cover_image)
+
+
             return {
                 'book_isbn' : isbn, 
                 'book_name' : title, 
                 'book_author': authors, 
-                'book_image' : cover_image
             }
         else:
             print("No book found with the provided ISBN.")
@@ -360,16 +397,14 @@ def get_book_info(isbn):
         print(f"Error: Unable to fetch data (Status code: {response.status_code})")
 
 
-@staff_member_required(login_url='')
-@login_required
+@group_required('Librarian')
 def add_book_info(request): 
     if request.method == 'POST': 
         book_info = get_book_info(request.POST['book_isbn'])
         return render(request, 'admin_add_books.html', book_info)
     
 
-@staff_member_required(login_url='')
-@login_required
+@group_required('Librarian')
 def admin_add_books(request): 
     messages = [] 
     if request.method == 'POST': 
@@ -414,7 +449,7 @@ def booklist_excel(filepath):
     required_columns = ['ISBN-13', 'Title', 'Author', 'Cover', 'Copies']
     for column in required_columns:
         if column not in df.columns:
-            raise ValueError
+            messages.append(f"There are some columsn missing, please enter the valid excel file")
            
         
     for _, row in df.iterrows():
@@ -457,22 +492,70 @@ def booklist_excel(filepath):
     
     return messages
 
-@staff_member_required(login_url='')
-@login_required
+@group_required('Librarian')
 def admin_edit_book(request): 
-    books = Book.objects.all().order_by('-id')
-    return render(request, 'admin_edit_book.html', {'books': books})
+    books = Book.objects.all().order_by('-title')
+   
+    search_value = request.GET.get('search', '').strip()
+    search_by = request.GET.get('search-by', '')
+    messages = []
 
 
-@staff_member_required(login_url='')
-@login_required
+    if search_value:
+        if search_by == 'title':
+            
+            titles = books.values_list('title', flat=True)
+            best_matches = process.extract(search_value, titles, limit=5)
+            
+            
+            matched_titles = [match[0] for match in best_matches]
+            books_queryset = Book.objects.filter(title__in=matched_titles)
+            books = sorted(
+                books_queryset,
+                key = lambda book: matched_titles.index(book.title)
+            )[:5]
+
+            
+
+            if int(best_matches[0][1]) > 70 and int(int(best_matches[0][1]) < 99): 
+                messages.append(f'Did you mean: {best_matches[0][0]}')
+
+            
+
+        elif search_by == 'isbn':
+            books = books.filter(isbn=search_value)
+            if len(books) == 0: 
+                messages.append('No books found')
+    
+    
+    
+    paginator = Paginator(books, 5)
+    page_number = request.GET.get('page',1)
+
+    try : 
+        books = paginator.page(page_number)
+    except EmptyPage: 
+        books = paginator.page(paginator.num_pages)
+    except PageNotAnInteger: 
+        books = paginator.page(1)
+        
+    return render(
+        request, 
+        'admin_edit_book.html', 
+        {
+            'books': books, 
+            'search_value': search_value, 
+            'messages': messages
+        }
+    )
+
+
+@group_required('Librarian')
 def admin_feedback(request): 
     rooms = FeedbackRoom.objects.all()
     return render(request, 'admin_feedback.html', {'rooms': rooms})
 
-
-@staff_member_required(login_url='')
-@login_required
+@group_required('Librarian')
 def admin_chat(request, bits_id): 
     rooms = FeedbackRoom.objects.all()
     student = get_object_or_404(Student, bits_id=bits_id)
@@ -484,6 +567,7 @@ def admin_chat(request, bits_id):
             subject = request.POST['subject'],
             body = request.POST['body'],
             admin_reply = True,
+            reference_image =request.FILES.get('reference_image'),
         )
         feedback.save()
 
@@ -500,8 +584,7 @@ def admin_chat(request, bits_id):
     )
 
 
-@staff_member_required(login_url='')
-@login_required
+@group_required('Librarian')
 def admin_book_details(request, book_isbn): 
     book = get_object_or_404(Book, isbn=book_isbn)
     records = BorrowRecord.objects.filter(book=book, returned=False)
@@ -540,9 +623,7 @@ def download_excel(request) :
     return response
 
 
-
-@staff_member_required(login_url='')
-@login_required
+@group_required('Librarian')
 def admin_change_details(request, book_isbn): 
     post = request.POST
     messages = []
@@ -566,9 +647,7 @@ def admin_change_details(request, book_isbn):
     
     return render(request, 'admin_change_details.html', {'book': book})
 
-
-@staff_member_required(login_url='')
-@login_required
+@group_required('Librarian')
 def delete_book(request, book_isbn):
     book = get_object_or_404(Book, isbn=book_isbn)
     book.delete()

@@ -9,13 +9,59 @@
             <p class=" flex text-3xl justify-center items-center mt-10 text-teal-400 font-mono">{{ user_name }} </p>
         </div>             
         <div class="bg-white shadow-sm rounded-2xl p-4 text-center font-bold">
-            <p>Total Number of Books</p>
+            <p>Total Number of Books in Library</p>
             <p class=" flex text-3xl justify-center items-center mt-10 text-teal-400 font-mono">{{ total_books }} </p>
         </div>
         <div class="bg-white shadow-sm rounded-2xl p-4 text-center font-bold">
             <p>Books Currently Issued</p>
             <p class=" flex text-3xl justify-center items-center mt-10 text-teal-400 font-mono">{{ borrowed_books }} </p>
         </div>
+        <div class="bg-white shadow-sm rounded-2xl p-6 flex flex-col items-center text-center font-bold col-span-2 space-y-6">
+            <!-- Title -->
+            <p class="text-lg">Set the Late Fees Percentage</p>
+            
+            <!-- Percentage Display -->
+            <div class="flex flex-col items-center">
+                <p id="percentage-show" class="text-2xl text-teal-400 font-mono">0.0%</p>
+            </div>
+        
+            <!-- Range Slider -->
+            <form action="" method="post" class="w-full flex flex-col items-center space-y-4">
+                {% csrf_token %}
+                <input
+                    type="range"
+                    id="range-slider"
+                    name="late_fee_percentage"
+                    min="0"
+                    max="100"
+                    step="1"
+                    value="{{ lateFeePercentage.percentage }}"
+                    class="w-4/5 h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer focus:outline-none focus:ring focus:ring-teal-300"
+                >
+                
+                <!-- Submit Button -->
+                <button
+                    type="submit"
+                    class="bg-teal-400 text-white px-6 py-2 rounded-lg shadow-md hover:scale-105 hover:shadow-lg duration-150"
+                >
+                    Set Percentage
+                </button>
+            </form>
+        </div>
+        <div class="bg-white shadow-sm rounded-2xl p-4 text-center font-bold">
+            <p>Late Fee percentage</p>
+            <p class=" flex text-3xl justify-center items-center mt-10 text-teal-400 font-mono">{{ lateFeePercentage.percentage }}% </p>
+        </div>
+    </div>
     </div>            
+    <script>
+        range = document.getElementById('range-slider');
+        percentage_show = document.getElementById('percentage-show')
+
+        percentage_show.innerHTML = range.value;
+        range.oninput = () => {
+            percentage_show.innerHTML = range.value; 
+        } 
+    </script>
 </div>
 {% endblock %}
